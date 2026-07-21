@@ -99,8 +99,7 @@
             const reader = new FileReader();
             reader.onload = function(e) {
                 const data = new Uint8Array(e.target.result);
-                // Читаємо без автоматичного збереження дат як UTC об'єктів
-                const workbook = XLSX.read(data, { type: 'array', cellDates: false, raw: false });
+                const workbook = XLSX.read(data, { type: 'array', cellDates: false, raw: true });
                 const firstSheet = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheet];
                 
@@ -136,9 +135,9 @@
 
                 if (address && !isNaN(targetAmount)) {
                     const txUrl = await findTransaction(address, targetAmount, rawDate);
-                    row["Посилання на TronScan"] = txUrl || "Не знайдено";
+                    row["Посилання на Блокчейн"] = txUrl || "Не знайдено";
                 } else {
-                    row["Посилання на TronScan"] = "Некоректні дані";
+                    row["Посилання на Блокчейн"] = "Некоректні дані";
                 }
 
                 await new Promise(r => setTimeout(r, 250));
@@ -149,9 +148,12 @@
             displayTable();
         }
 
-        async function findTransaction(address, targetAmount, targetDate) {
+        async function findTransaction(address, targetAmount, rawDate) {
             try {
+                const targetDate = parseExcelDate(rawDate);
+
                 if (address.startsWith('T')) {
+                    // TRON (TronScan)
                     const res = await fetch(`https://apilist.tronscan.org/api/token_trc20/transfers?limit=50&relatedAddress=${address}`);
                     const data = await res.json();
                     const txs = data.token_transfers || [];
@@ -165,6 +167,20 @@
                             return `https://tronscan.org/#/transaction/${tx.transaction_id}`;
                         }
                     }
+                } else if (address.startsWith('0x')) {
+                    // Ethereum (Etherscan via Blockchair)
+                    const res = await fetch(`https://api.blockchair.com/ethereum/dashboards/address/${address}?limit=50`);
+                    const data = await res.json();
+                    const calls = data.data[address.toLowerCase()]?.calls || [];
+
+                    for (let call of calls) {
+                        const txAmount = call.value / 1e18; // Переведення в ETH
+                        const txTimestamp = new Date(call.time).getTime();
+
+                        if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
+                            return `https://etherscan.io/tx/${call.transaction_hash}`;
+                        }
+                    }
                 }
             } catch (e) {
                 console.error("Помилка API:", e);
@@ -172,23 +188,37 @@
             return null;
         }
 
-        // Перевірка суми (з похибкою 1%)
+        // Конвертер дат для чисел Excel (46224 -> Date), рядків та ISO
+        function parseExcelDate(val) {
+            if (!val) return null;
+            
+            // Якщо це число Excel (наприклад, 46224)
+            if (typeof val === 'number' || !isNaN(Number(val))) {
+                const num = Number(val);
+                // Формула конвертації серійного числа Excel у JS timestamp
+                const date = new Date(Math.round((num - 25569) * 86400 * 1000));
+                return date;
+            }
+
+            // Якщо це рядок з датою
+            const parsed = new Date(val);
+            if (!isNaN(parsed.getTime())) return parsed;
+
+            return null;
+        }
+
+        // Перевірка суми (з похибкою до 1% або 0.05)
         function isAmountMatch(a, b) {
             return Math.abs(a - b) < 0.05 || Math.abs(a - b) / b < 0.01;
         }
 
-        // Гнучка перевірка дати (з урахуванням зсуву часових поясів)
-        function isDateMatchFlexible(txTimestamp, targetDateStr) {
-            if (!targetDateStr) return true; // Якщо дати немає, шукаємо суму
+        // Перевірка дати (з допуском 36 годин для компенсації часових поясів)
+        function isDateMatchFlexible(txTimestamp, targetDate) {
+            if (!targetDate) return true; // Якщо дата не зчиталася, порівнюємо тільки за сумою
             
             const txDate = new Date(txTimestamp);
-            const targetDate = new Date(targetDateStr);
-
-            // Якщо дата з Excel не парситься нормально, пропускаємо фільтр дати
-            if (isNaN(targetDate.getTime())) return true; 
-
-            // Перевіряємо різницю в часі (допускаємо розходження до 36 годин для компенсації UTC)
             const diffInHours = Math.abs(txDate - targetDate) / (1000 * 60 * 60);
+            
             return diffInHours <= 36;
         }
 
