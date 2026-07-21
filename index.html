@@ -68,7 +68,7 @@
 
     <div class="card">
         <p>Завантажте Excel-файл (.xlsx), у якому є колонки: <b>Адреса</b>, <b>Сума</b>, <b>Дата</b>.</p>
-        <p><small>Підтримуються мережі: <b>TRON (USDT/TRX)</b> та <b>Ethereum (ETH/USDT/USDC)</b>.</small></p>
+        <p><small>Підтримуються: <b>TRON (USDT/TRX)</b> та <b>Ethereum (USDT/USDC/ETH)</b>.</small></p>
         <input type="file" id="excel-file" accept=".xlsx, .xls" />
         <button id="process-btn" onclick="processExcel()" disabled>Обробити файл 🚀</button>
         <button id="download-btn" onclick="downloadExcel()" style="display:none; background-color: #0288d1;">Завантажити результат 📥</button>
@@ -141,7 +141,8 @@
                     row["Посилання на Блокчейн"] = "Некоректні дані";
                 }
 
-                await new Promise(r => setTimeout(r, 300));
+                // Затримка між запитами для стабільності
+                await new Promise(r => setTimeout(r, 400));
             }
 
             progress.innerText = "✅ Обробку завершено!";
@@ -153,7 +154,7 @@
             try {
                 const targetDate = parseExcelDate(rawDate);
 
-                // 1. Пошук для TRON (TRC-20)
+                // 1. Пошук у TRON (TronScan)
                 if (address.startsWith('T')) {
                     const res = await fetch(`https://apilist.tronscan.org/api/token_trc20/transfers?limit=50&relatedAddress=${address}`);
                     const data = await res.json();
@@ -169,32 +170,36 @@
                         }
                     }
                 } 
-                // 2. Пошук для Ethereum (ETH + ERC-20: USDT / USDC)
+                // 2. Пошук в Ethereum (через стабільний API Blockscout / Etherscan)
                 else if (address.startsWith('0x')) {
-                    const res = await fetch(`https://api.blockchair.com/ethereum/dashboards/address/${address}?limit=50`);
-                    const data = await res.json();
-                    const addrData = data.data[address.toLowerCase()];
+                    // А. Перекази ERC-20 токенів (USDT / USDC)
+                    const resToken = await fetch(`https://eth.blockscout.com/api?module=account&action=tokentx&address=${address}`);
+                    const dataToken = await resToken.json();
 
-                    // А. Пошук серед ERC-20 токенів (USDT, USDC тощо)
-                    const erc20Transfers = addrData?.layer2?.erc_20 || [];
-                    for (let tx of erc20Transfers) {
-                        const decimals = tx.token_decimals || 6;
-                        const txAmount = parseFloat(tx.value) / Math.pow(10, decimals);
-                        const txTimestamp = new Date(tx.time).getTime();
+                    if (dataToken.status === "1" && dataToken.result) {
+                        for (let tx of dataToken.result) {
+                            const decimals = parseInt(tx.tokenDecimal) || 6;
+                            const txAmount = parseFloat(tx.value) / Math.pow(10, decimals);
+                            const txTimestamp = parseInt(tx.timeStamp) * 1000;
 
-                        if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
-                            return `https://etherscan.io/tx/${tx.transaction_hash}`;
+                            if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
+                                return `https://etherscan.io/tx/${tx.hash}`;
+                            }
                         }
                     }
 
-                    // Б. Пошук серед нативних транзакцій ETH
-                    const calls = addrData?.calls || [];
-                    for (let call of calls) {
-                        const txAmount = call.value / 1e18; // В ETH
-                        const txTimestamp = new Date(call.time).getTime();
+                    // Б. Звичайні перекази ETH
+                    const resEth = await fetch(`https://eth.blockscout.com/api?module=account&action=txlist&address=${address}`);
+                    const dataEth = await resEth.json();
 
-                        if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
-                            return `https://etherscan.io/tx/${call.transaction_hash}`;
+                    if (dataEth.status === "1" && dataEth.result) {
+                        for (let tx of dataEth.result) {
+                            const txAmount = parseFloat(tx.value) / 1e18;
+                            const txTimestamp = parseInt(tx.timeStamp) * 1000;
+
+                            if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
+                                return `https://etherscan.io/tx/${tx.hash}`;
+                            }
                         }
                     }
                 }
@@ -204,7 +209,6 @@
             return null;
         }
 
-        // Конвертер дат Excel
         function parseExcelDate(val) {
             if (!val) return null;
             if (typeof val === 'number' || !isNaN(Number(val))) {
@@ -215,12 +219,10 @@
             return !isNaN(parsed.getTime()) ? parsed : null;
         }
 
-        // Перевірка суми (з похибкою до 1% або 0.05)
         function isAmountMatch(a, b) {
             return Math.abs(a - b) < 0.05 || Math.abs(a - b) / b < 0.01;
         }
 
-        // Перевірка дати (допуск 36 годин для компенсації UTC/часових поясів)
         function isDateMatchFlexible(txTimestamp, targetDate) {
             if (!targetDate) return true;
             const txDate = new Date(txTimestamp);
