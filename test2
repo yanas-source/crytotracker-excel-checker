@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Пошук Хешів Транзакцій з Excel</title>
+    <!-- Бібліотека для читання та запису Excel -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            padding: 20px;
+            max-width: 1000px;
+            margin: auto;
+        }
+        h1 { color: #ffffff; }
+        .card {
+            background-color: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        input[type="file"] {
+            padding: 10px;
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button {
+            padding: 10px 18px;
+            background-color: #2e7d32;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1em;
+            margin-left: 10px;
+        }
+        button:hover { background-color: #388e3c; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 10px;
+            text-align: left;
+            word-break: break-all;
+        }
+        th { background-color: #2a2a2a; color: #fff; }
+        tr:nth-child(even) { background-color: #181818; }
+        a { color: #4da6ff; text-decoration: none; font-weight: bold; }
+        a:hover { text-decoration: underline; }
+        .status-not-found { color: #f44336; font-weight: bold; }
+        .progress { margin-top: 10px; font-size: 1.1em; color: #ffb74d; }
+    </style>
+</head>
+<body>
+
+    <h1>📊 Автоматична Звірка Платежів з Excel</h1>
+
+    <div class="card">
+        <p>Завантажте Excel-файл (.xlsx), у якому є колонки: <b>Адреса</b>, <b>Сума</b>, <b>Дата</b>.</p>
+        <input type="file" id="excel-file" accept=".xlsx, .xls" />
+        <button id="process-btn" onclick="processExcel()" disabled>Обробити файл 🚀</button>
+        <button id="download-btn" onclick="downloadExcel()" style="display:none; background-color: #0288d1;">Завантажити результат 📥</button>
+        
+        <div id="progress" class="progress"></div>
+    </div>
+
+    <div class="card" id="result-card" style="display:none;">
+        <h2>Результати перевірки:</h2>
+        <div style="overflow-x:auto;">
+            <table id="result-table">
+                <thead>
+                    <tr id="table-header"></tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let parsedData = [];
+        let updatedData = [];
+        let headers = [];
+
+        document.getElementById('excel-file').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                const firstSheet = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheet];
+                
+                parsedData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+                
+                if (parsedData.length > 0) {
+                    headers = Object.keys(parsedData[0]);
+                    document.getElementById('process-btn').disabled = false;
+                    document.getElementById('progress').innerText = `Файл завантажено. Знайдено рядків: ${parsedData.length}`;
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        async function processExcel() {
+            document.getElementById('process-btn').disabled = true;
+            document.getElementById('download-btn').style.display = 'none';
+            const progress = document.getElementById('progress');
+            
+            updatedData = JSON.parse(JSON.stringify(parsedData));
+
+            const addrCol = headers.find(h => /адрес|address|wallet|гаманець/i.test(h)) || headers[0];
+            const amountCol = headers.find(h => /сум|amount|sum/i.test(h)) || headers[1];
+            const dateCol = headers.find(h => /дат|date/i.test(h)) || headers[2];
+
+            for (let i = 0; i < updatedData.length; i++) {
+                const row = updatedData[i];
+                const address = String(row[addrCol] || "").trim();
+                const targetAmount = parseFloat(row[amountCol]);
+                const rawDate = row[dateCol];
+
+                progress.innerText = `Обробка рядка ${i + 1} з${updatedData.length}...`;
+
+                if (address && !isNaN(targetAmount)) {
+                    const txUrl = await findTransaction(address, targetAmount, rawDate);
+                    row["Посилання на TronScan"] = txUrl || "Не знайдено";
+                } else {
+                    row["Посилання на TronScan"] = "Некоректні дані";
+                }
+
+                await new Promise(r => setTimeout(r, 300));
+            }
+
+            progress.innerText = "✅ Обробку завершено!";
+            document.getElementById('download-btn').style.display = 'inline-block';
+            displayTable();
+        }
+
+        async function findTransaction(address, targetAmount, targetDate) {
+            try {
+                if (address.startsWith('T')) {
+                    const res = await fetch(`https://apilist.tronscan.org/api/token_trc20/transfers?limit=50&relatedAddress=${address}`);
+                    const data = await res.json();
+                    const txs = data.token_transfers || [];
+
+                    for (let tx of txs) {
+                        const decimals = tx.tokenInfo?.tokenDecimal || 6;
+                        const txAmount = parseFloat(tx.quant) / Math.pow(10, decimals);
+                        const txDate = new Date(tx.block_ts);
+
+                        if (isAmountMatch(txAmount, targetAmount) && isDateMatch(txDate, targetDate)) {
+                            return `https://tronscan.org/#/transaction/${tx.transaction_id}`;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Помилка API:", e);
+            }
+            return null;
+        }
+
+        function isAmountMatch(a, b) {
+            return Math.abs(a - b) < 0.05 || Math.abs(a - b) / b < 0.01;
+        }
+
+        function isDateMatch(txDate, targetDate) {
+            if (!targetDate) return true;
+            const d1 = new Date(txDate);
+            const d2 = new Date(targetDate);
+            if (isNaN(d2.getTime())) return true;
+
+            return d1.getUTCFullYear() === d2.getUTCFullYear() &&
+                   d1.getUTCMonth() === d2.getUTCMonth() &&
+                   d1.getUTCDate() === d2.getUTCDate();
+        }
+
+        function displayTable() {
+            const tableCard = document.getElementById('result-card');
+            const headerRow = document.getElementById('table-header');
+            const tbody = document.getElementById('table-body');
+            
+            tableCard.style.display = 'block';
+            headerRow.innerHTML = '';
+            tbody.innerHTML = '';
+
+            const allHeaders = Object.keys(updatedData[0]);
+            
+            allHeaders.forEach(h => {
+                const th = document.createElement('th');
+                th.innerText = h;
+                headerRow.appendChild(th);
+            });
+
+            updatedData.forEach(row => {
+                const tr = document.createElement('tr');
+                allHeaders.forEach(h => {
+                    const td = document.createElement('td');
+                    const val = row[h];
+                    if (typeof val === 'string' && val.startsWith('http')) {
+                        td.innerHTML = `<a href="${val}" target="_blank">Перейти 🔗</a>`;
+                    } else if (val === 'Не знайдено') {
+                        td.innerHTML = `<span class="status-not-found">❌ Не знайдено</span>`;
+                    } else {
+                        td.innerText = val;
+                    }
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        function downloadExcel() {
+            const worksheet = XLSX.utils.json_to_sheet(updatedData);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Результати");
+            XLSX.writeFile(workbook, "Звірка_З_Посиланнями.xlsx");
+        }
+    </script>
+</body>
+</html>
