@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Пошук Хешів Транзакцій з Excel</title>
-    <!-- Бібліотека для читання та запису Excel -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         body {
@@ -100,7 +99,8 @@
             const reader = new FileReader();
             reader.onload = function(e) {
                 const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                // Читаємо без автоматичного збереження дат як UTC об'єктів
+                const workbook = XLSX.read(data, { type: 'array', cellDates: false, raw: false });
                 const firstSheet = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheet];
                 
@@ -132,7 +132,7 @@
                 const targetAmount = parseFloat(row[amountCol]);
                 const rawDate = row[dateCol];
 
-                progress.innerText = `Обробка рядка ${i + 1} з${updatedData.length}...`;
+                progress.innerText = `Обробка рядка ${i + 1} з ${updatedData.length}...`;
 
                 if (address && !isNaN(targetAmount)) {
                     const txUrl = await findTransaction(address, targetAmount, rawDate);
@@ -141,7 +141,7 @@
                     row["Посилання на TronScan"] = "Некоректні дані";
                 }
 
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 250));
             }
 
             progress.innerText = "✅ Обробку завершено!";
@@ -159,9 +159,9 @@
                     for (let tx of txs) {
                         const decimals = tx.tokenInfo?.tokenDecimal || 6;
                         const txAmount = parseFloat(tx.quant) / Math.pow(10, decimals);
-                        const txDate = new Date(tx.block_ts);
+                        const txTimestamp = tx.block_ts;
 
-                        if (isAmountMatch(txAmount, targetAmount) && isDateMatch(txDate, targetDate)) {
+                        if (isAmountMatch(txAmount, targetAmount) && isDateMatchFlexible(txTimestamp, targetDate)) {
                             return `https://tronscan.org/#/transaction/${tx.transaction_id}`;
                         }
                     }
@@ -172,19 +172,24 @@
             return null;
         }
 
+        // Перевірка суми (з похибкою 1%)
         function isAmountMatch(a, b) {
             return Math.abs(a - b) < 0.05 || Math.abs(a - b) / b < 0.01;
         }
 
-        function isDateMatch(txDate, targetDate) {
-            if (!targetDate) return true;
-            const d1 = new Date(txDate);
-            const d2 = new Date(targetDate);
-            if (isNaN(d2.getTime())) return true;
+        // Гнучка перевірка дати (з урахуванням зсуву часових поясів)
+        function isDateMatchFlexible(txTimestamp, targetDateStr) {
+            if (!targetDateStr) return true; // Якщо дати немає, шукаємо суму
+            
+            const txDate = new Date(txTimestamp);
+            const targetDate = new Date(targetDateStr);
 
-            return d1.getUTCFullYear() === d2.getUTCFullYear() &&
-                   d1.getUTCMonth() === d2.getUTCMonth() &&
-                   d1.getUTCDate() === d2.getUTCDate();
+            // Якщо дата з Excel не парситься нормально, пропускаємо фільтр дати
+            if (isNaN(targetDate.getTime())) return true; 
+
+            // Перевіряємо різницю в часі (допускаємо розходження до 36 годин для компенсації UTC)
+            const diffInHours = Math.abs(txDate - targetDate) / (1000 * 60 * 60);
+            return diffInHours <= 36;
         }
 
         function displayTable() {
