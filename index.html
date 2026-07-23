@@ -11,10 +11,10 @@
             background-color: #121212;
             color: #e0e0e0;
             padding: 20px;
-            max-width: 1000px;
+            max-width: 1100px;
             margin: auto;
         }
-        h1 { color: #ffffff; }
+        h1, h2 { color: #ffffff; }
         .card {
             background-color: #1e1e1e;
             padding: 20px;
@@ -39,10 +39,15 @@
             cursor: pointer;
             font-weight: bold;
             font-size: 1em;
-            margin-left: 10px;
+            margin-right: 10px;
+            margin-top: 10px;
         }
         button:hover { background-color: #388e3c; }
         button:disabled { background-color: #555; cursor: not-allowed; }
+        .btn-copy { background-color: #f57c00; }
+        .btn-copy:hover { background-color: #ef6c00; }
+        .btn-download { background-color: #0288d1; }
+        .btn-download:hover { background-color: #0277bd; }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -67,11 +72,13 @@
     <h1>📊 Автоматична Звірка Платежів з Excel</h1>
 
     <div class="card">
-        <p>Завантажте Excel-файл (.xlsx), у якому є колонки: <b>Адреса</b>, <b>Сума</b>, <b>Дата</b>.</p>
-        <p><small>Підтримуються: <b>TRON (USDT/TRX)</b> та <b>Ethereum (USDT/USDC/ETH)</b>.</small></p>
+        <p>Завантажте Excel-файл (.xlsx), у якому є колонки: <b>Wallet</b>, <b>Amount</b>, <b>Date</b>, <b>Comment</b>.</p>
+        <p><small>Підтримуються мережі: <b>TRON (USDT/TRX)</b> та <b>Ethereum (USDT/USDC/ETH)</b>.</small></p>
         <input type="file" id="excel-file" accept=".xlsx, .xls" />
+        <br>
         <button id="process-btn" onclick="processExcel()" disabled>Обробити файл 🚀</button>
-        <button id="download-btn" onclick="downloadExcel()" style="display:none; background-color: #0288d1;">Завантажити результат 📥</button>
+        <button id="download-btn" class="btn-download" onclick="downloadExcel()" style="display:none;">Завантажити Excel 📥</button>
+        <button id="copy-btn" class="btn-copy" onclick="copyAllLinks()" style="display:none;">Скопіювати всі посилання 📋</button>
         
         <div id="progress" class="progress"></div>
     </div>
@@ -118,6 +125,7 @@
         async function processExcel() {
             document.getElementById('process-btn').disabled = true;
             document.getElementById('download-btn').style.display = 'none';
+            document.getElementById('copy-btn').style.display = 'none';
             const progress = document.getElementById('progress');
             
             updatedData = JSON.parse(JSON.stringify(parsedData));
@@ -141,12 +149,12 @@
                     row["Посилання на Блокчейн"] = "Некоректні дані";
                 }
 
-                // Затримка між запитами для стабільності
-                await new Promise(r => setTimeout(r, 400));
+                await new Promise(r => setTimeout(r, 300));
             }
 
             progress.innerText = "✅ Обробку завершено!";
             document.getElementById('download-btn').style.display = 'inline-block';
+            document.getElementById('copy-btn').style.display = 'inline-block';
             displayTable();
         }
 
@@ -154,7 +162,6 @@
             try {
                 const targetDate = parseExcelDate(rawDate);
 
-                // 1. Пошук у TRON (TronScan)
                 if (address.startsWith('T')) {
                     const res = await fetch(`https://apilist.tronscan.org/api/token_trc20/transfers?limit=50&relatedAddress=${address}`);
                     const data = await res.json();
@@ -169,10 +176,7 @@
                             return `https://tronscan.org/#/transaction/${tx.transaction_id}`;
                         }
                     }
-                } 
-                // 2. Пошук в Ethereum (через стабільний API Blockscout / Etherscan)
-                else if (address.startsWith('0x')) {
-                    // А. Перекази ERC-20 токенів (USDT / USDC)
+                } else if (address.startsWith('0x')) {
                     const resToken = await fetch(`https://eth.blockscout.com/api?module=account&action=tokentx&address=${address}`);
                     const dataToken = await resToken.json();
 
@@ -188,7 +192,6 @@
                         }
                     }
 
-                    // Б. Звичайні перекази ETH
                     const resEth = await fetch(`https://eth.blockscout.com/api?module=account&action=txlist&address=${address}`);
                     const dataEth = await resEth.json();
 
@@ -209,6 +212,7 @@
             return null;
         }
 
+        // Парсер і форматувальник дати (Excel 46226 -> Date Об'єкт)
         function parseExcelDate(val) {
             if (!val) return null;
             if (typeof val === 'number' || !isNaN(Number(val))) {
@@ -217,6 +221,18 @@
             }
             const parsed = new Date(val);
             return !isNaN(parsed.getTime()) ? parsed : null;
+        }
+
+        // Красиве відображення дати у форматі ДД.ММ.РРРР
+        function formatDateToReadable(val) {
+            const dateObj = parseExcelDate(val);
+            if (!dateObj) return val; // Якщо не дата, залишаємо як є
+            
+            const day = String(dateObj.getDate()).padStart(2, '0');
+            const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const year = dateObj.getFullYear();
+            
+            return `${day}.${month}.${year}`;
         }
 
         function isAmountMatch(a, b) {
@@ -240,6 +256,7 @@
             tbody.innerHTML = '';
 
             const allHeaders = Object.keys(updatedData[0]);
+            const dateColKey = allHeaders.find(h => /дат|date/i.test(h));
             
             allHeaders.forEach(h => {
                 const th = document.createElement('th');
@@ -251,7 +268,13 @@
                 const tr = document.createElement('tr');
                 allHeaders.forEach(h => {
                     const td = document.createElement('td');
-                    const val = row[h];
+                    let val = row[h];
+
+                    // Форматування дати тільки для екранної таблиці
+                    if (h === dateColKey && val) {
+                        val = formatDateToReadable(val);
+                    }
+
                     if (typeof val === 'string' && val.startsWith('http')) {
                         td.innerHTML = `<a href="${val}" target="_blank">Перейти 🔗</a>`;
                     } else if (val === 'Не знайдено') {
@@ -262,6 +285,28 @@
                     tr.appendChild(td);
                 });
                 tbody.appendChild(tr);
+            });
+        }
+
+        // Функція для копіювання всіх знайдених посилань
+        function copyAllLinks() {
+            const links = updatedData
+                .map(row => row["Посилання на Блокчейн"])
+                .filter(url => typeof url === 'string' && url.startsWith('http'))
+                .join('\n');
+
+            if (!links) {
+                alert("Немає знайдених посилань для копіювання!");
+                return;
+            }
+
+            navigator.clipboard.writeText(links).then(() => {
+                const copyBtn = document.getElementById('copy-btn');
+                const originalText = copyBtn.innerText;
+                copyBtn.innerText = "Скопійовано! ✅";
+                setTimeout(() => { copyBtn.innerText = originalText; }, 2000);
+            }).catch(err => {
+                console.error("Помилка копіювання: ", err);
             });
         }
 
